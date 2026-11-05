@@ -45,10 +45,14 @@ removed; custom image processors must use native operations.
 Run the focused image checks without the historical database test harness:
 
 ```sh
-ruby -Ilib spec/paperclip/thumbnail_spec.rb --options /dev/null
+BUNDLE_GEMFILE=Gemfile.native bundle install
+BUNDLE_GEMFILE=Gemfile.native bundle exec ruby -Ilib spec/paperclip/thumbnail_spec.rb --options /dev/null
 ```
 
 The checks generate their inputs with libvips and forbid image command execution.
+The native image workflow runs these checks on Ubuntu 24.04 with its libvips
+packages, matching the Heroku 24 runtime family, Ruby 4.0.9, ruby-vips 2.2.3, and
+image_processing 2.2.0. It does not run the historical database/CLI test harness.
 
 We plan to support and maintain paperclip, as well as clean it up.
 
