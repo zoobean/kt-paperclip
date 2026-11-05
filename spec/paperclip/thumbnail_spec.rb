@@ -188,10 +188,12 @@ RSpec.describe "Native libvips image processing" do
     original = File.open(image_file) { |file| Paperclip.io_adapters.for(file) }
     @results << original
     attachment.instance_variable_set(:@queued_for_write, { original: original })
-    attachment.instance_variable_set(:@options, Paperclip::Attachment.default_options.merge(adapter_options: {}, whiny: true))
+    attachment.instance_variable_set(:@options,
+                                     Paperclip::Attachment.default_options.merge(adapter_options: {}, whiny: true))
     attachment.instance_variable_set(:@errors, {})
     attachment.instance_variable_set(:@whiny, true)
-    style = Paperclip::Style.new(:original, { geometry: "40x40>", processors: [:libvips_passthrough, :thumbnail] }, attachment)
+    style = Paperclip::Style.new(:original, { geometry: "40x40>", processors: [:libvips_passthrough, :thumbnail] },
+                                 attachment)
     result = attachment.send(:post_process_style, :original, style)
     @results << result if result.respond_to?(:close!)
     expect(result).to respond_to(:path)
@@ -211,7 +213,8 @@ RSpec.describe "Native libvips image processing" do
     original = File.open(image_file) { |file| Paperclip.io_adapters.for(file) }
     @results << original
     attachment.instance_variable_set(:@queued_for_write, { original: original })
-    attachment.instance_variable_set(:@options, Paperclip::Attachment.default_options.merge(adapter_options: {}, whiny: false))
+    attachment.instance_variable_set(:@options,
+                                     Paperclip::Attachment.default_options.merge(adapter_options: {}, whiny: false))
     attachment.instance_variable_set(:@errors, {})
     attachment.instance_variable_set(:@whiny, false)
     style = Paperclip::Style.new(:original, { processors: [:libvips_passthrough] }, attachment)
