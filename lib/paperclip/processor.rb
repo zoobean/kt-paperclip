@@ -32,6 +32,5 @@ module Paperclip
     def self.make(file, options = {}, attachment = nil)
       new(file, options, attachment).make
     end
-
   end
 end

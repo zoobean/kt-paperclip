@@ -107,7 +107,7 @@ module Paperclip
       use_exif_orientation: true,
       whiny: true,
       is_windows: Gem.win_platform?,
-      add_validation_errors_to: :both
+      add_validation_errors_to: :both,
     }
   end
 

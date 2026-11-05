@@ -3,6 +3,9 @@ module Paperclip
   # Style options are explicit: saver: { quality:, strip: }, flatten: [r, g, b],
   # and grayscale: :rec709_luminance. CLI option strings are intentionally rejected.
   class Thumbnail < Processor
+    # Keep the finite geometry cases and encoding lifecycle together rather than
+    # introducing extra processor classes to satisfy method-size thresholds.
+    # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
     attr_accessor :current_geometry, :target_geometry, :format, :whiny,
                   :animated, :auto_orient, :frame_index
 
@@ -19,23 +22,32 @@ module Paperclip
     end
 
     def make
-      raise Error, "Use style saver/flatten/grayscale options instead of convert_options" if options[:convert_options].present?
+      if options[:convert_options].present?
+        raise Error,
+              "Use style saver/flatten/grayscale options instead of convert_options"
+      end
       raise Error, "Use native loader options instead of source_file_options" if options[:source_file_options].present?
 
       source = ::Vips::Image.new_from_file(file.path, access: :sequential)
       source_format = source.get("vips-loader").sub(/load.*/, "")
-      extension = File.extname(file.path).delete_prefix(".").downcase
-      output_format = format.to_s.presence || (extension == "svg" || native_saver?(extension) ? extension : source_format)
+      output_format = format.to_s.presence || source_format
       preserve_animation = animated && source_format == "gif" && output_format == "gif" && source.get("n-pages") > 1
       loader = options.fetch(:loader, {}).merge(autorot: auto_orient)
-      loader.merge!(n: preserve_animation ? -1 : 1, page: preserve_animation ? 0 : frame_index) if source.get_typeof("n-pages") != 0
+      if source.get_typeof("n-pages") != 0
+        loader.merge!(n: preserve_animation ? -1 : 1,
+                      page: preserve_animation ? 0 : frame_index)
+      end
 
       pipeline = if preserve_animation
                    ImageProcessing::Vips.source(resize_animation).loader(autorot: false)
                  else
                    resize_image(ImageProcessing::Vips.source(file).loader(**loader))
                  end
-      pipeline = pipeline.flatten(background: options[:flatten]) if options[:flatten]
+      if options[:flatten]
+        pipeline = pipeline.custom do |image|
+          image.has_alpha? ? image.colourspace(:srgb).flatten(background: options[:flatten]) : image
+        end
+      end
       pipeline = grayscale_image(pipeline) if options[:grayscale]
       pipeline = pipeline.saver(**options.fetch(:saver, {}))
       destination = TempfileFactory.new.generate("thumbnail.#{output_format}")
@@ -46,9 +58,9 @@ module Paperclip
       end
       destination.rewind
       destination
-    rescue ::Vips::Error, ImageProcessing::Error, Paperclip::Error => error
-      destination.close! if destination
-      raise Paperclip::Error, "Error processing #{File.basename(file.path)} with libvips: #{error.message}" if whiny
+    rescue ::Vips::Error, ImageProcessing::Error, Paperclip::Error => e
+      destination&.close!
+      raise Paperclip::Error, "Error processing #{File.basename(file.path)} with libvips: #{e.message}" if whiny
 
       file.rewind
       file
@@ -59,11 +71,6 @@ module Paperclip
     end
 
     private
-
-    def native_saver?(extension)
-      saver = ::Vips.vips_foreign_find_save("thumbnail.#{extension}") if extension.present?
-      saver && !saver.include?("Magick")
-    end
 
     def resize_image(pipeline)
       return pipeline unless target_geometry
@@ -108,12 +115,15 @@ module Paperclip
     end
 
     def grayscale_image(pipeline)
-      raise Error, "Unsupported grayscale conversion: #{options[:grayscale]}" unless options[:grayscale] == :rec709_luminance
+      unless options[:grayscale] == :rec709_luminance
+        raise Error,
+              "Unsupported grayscale conversion: #{options[:grayscale]}"
+      end
 
       # Rec709Luminance operates in linear light. B_W alone applies gamma and
       # makes existing grayscale badges visibly lighter than their stored values.
-      pipeline.colourspace(:scrgb).recomb([[0.212656, 0.715158, 0.072186]])
-        .linear(255, 0).rint.cast(:uchar).copy(interpretation: :b_w)
+      pipeline.colourspace(:scrgb).recomb([[0.212656, 0.715158, 0.072186]]).
+        linear(255, 0).rint.cast(:uchar).copy(interpretation: :b_w)
     end
 
     def write_svg(pipeline, destination)
@@ -122,8 +132,14 @@ module Paperclip
       image = pipeline.call(save: false)
       png = image.pngsave_buffer(**options.fetch(:saver, {}).except(:quality))
       encoded = Base64.strict_encode64(png)
-      destination.write(%(<svg xmlns="http://www.w3.org/2000/svg" width="#{image.width}" height="#{image.height}" viewBox="0 0 #{image.width} #{image.height}"><image width="#{image.width}" height="#{image.height}" href="data:image/png;base64,#{encoded}"/></svg>))
+      destination.write(<<~SVG)
+        <svg xmlns="http://www.w3.org/2000/svg" width="#{image.width}" height="#{image.height}"
+             viewBox="0 0 #{image.width} #{image.height}">
+          <image width="#{image.width}" height="#{image.height}" href="data:image/png;base64,#{encoded}"/>
+        </svg>
+      SVG
       destination.flush
     end
+    # rubocop:enable Metrics/AbcSize, Metrics/MethodLength, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
   end
 end

@@ -33,6 +33,5 @@ module Paperclip
         raise Errors::NotIdentifiedByVipsError, "Cannot find the geometry of a file with a blank name"
       end
     end
-
   end
 end

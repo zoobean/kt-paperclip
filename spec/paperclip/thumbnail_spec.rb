@@ -151,9 +151,80 @@ RSpec.describe "Native libvips image processing" do
     expect(flattened.getpoint(0, 0)).to eq([255, 255, 255])
   end
 
+  it "leaves opaque JPEG and PNG colors intact when flattening" do
+    %w[jpg png].each do |extension|
+      source = image_file("opaque.#{extension}", color: [128, 64, 32])
+      output = Vips::Image.new_from_file(thumbnail(source, flatten: [255, 255, 255], format: :png).path)
+      expect(output.bands).to eq(3)
+      output.getpoint(0, 0).zip([128, 64, 32]).each do |actual, expected|
+        expect(actual).to be_within(2).of(expected)
+      end
+    end
+  end
+
+  it "keeps static GIFs static" do
+    source = image_file("static.gif", width: 20, height: 10)
+    result = thumbnail(source, geometry: "10x10>")
+    expect(dimensions(result)).to eq([10, 5])
+  end
+
+  it "preserves the detected encoding and alpha when a valid filename extension is wrong" do
+    source = image_file(color: [200, 100, 50, 128])
+    renamed = File.join(@directory, "wrong.jpg")
+    FileUtils.cp(source, renamed)
+    result = thumbnail(renamed, geometry: "40x40>")
+    expect(result.read(8)).to eq("\x89PNG\r\n\x1a\n".b)
+    expect(Vips::Image.new_from_file(result.path).has_alpha?).to be(true)
+  end
+
+  it "keeps the original open through a processor fallback followed by a thumbnail" do
+    passthrough = Class.new(Paperclip::Processor) do
+      def make
+        file
+      end
+    end
+    Paperclip.register_processor(:libvips_passthrough, passthrough)
+    attachment = Paperclip::Attachment.allocate
+    original = File.open(image_file) { |file| Paperclip.io_adapters.for(file) }
+    @results << original
+    attachment.instance_variable_set(:@queued_for_write, { original: original })
+    attachment.instance_variable_set(:@options, Paperclip::Attachment.default_options.merge(adapter_options: {}, whiny: true))
+    attachment.instance_variable_set(:@errors, {})
+    attachment.instance_variable_set(:@whiny, true)
+    style = Paperclip::Style.new(:original, { geometry: "40x40>", processors: [:libvips_passthrough, :thumbnail] }, attachment)
+    result = attachment.send(:post_process_style, :original, style)
+    @results << result if result.respond_to?(:close!)
+    expect(result).to respond_to(:path)
+    expect(dimensions(result)).to eq([40, 20])
+    expect(result.read).not_to be_empty
+    expect(original).to be_closed
+  end
+
+  it "keeps an original returned unchanged by a processor open for upload" do
+    passthrough = Class.new(Paperclip::Processor) do
+      def make
+        file
+      end
+    end
+    Paperclip.register_processor(:libvips_passthrough, passthrough)
+    attachment = Paperclip::Attachment.allocate
+    original = File.open(image_file) { |file| Paperclip.io_adapters.for(file) }
+    @results << original
+    attachment.instance_variable_set(:@queued_for_write, { original: original })
+    attachment.instance_variable_set(:@options, Paperclip::Attachment.default_options.merge(adapter_options: {}, whiny: false))
+    attachment.instance_variable_set(:@errors, {})
+    attachment.instance_variable_set(:@whiny, false)
+    style = Paperclip::Style.new(:original, { processors: [:libvips_passthrough] }, attachment)
+    result = attachment.send(:post_process_style, :original, style)
+    expect(result).to equal(original)
+    expect(result).not_to be_closed
+    expect(result.read).not_to be_empty
+  end
+
   it "matches baseline linear Rec709 luminance values, including midgray" do
     [[[255, 0, 0], 54], [[0, 255, 0], 182], [[0, 0, 255], 18], [[128, 128, 128], 55]].each do |color, gray|
-      result = thumbnail(image_file("color-#{color.join('-')}.png", color: color), grayscale: :rec709_luminance, format: :png)
+      result = thumbnail(image_file("color-#{color.join('-')}.png", color: color), grayscale: :rec709_luminance,
+                                                                                   format: :png)
       image = Vips::Image.new_from_file(result.path)
       expect(image.bands).to eq(1)
       expect(image.getpoint(0, 0).first).to be_within(1).of(gray)
@@ -175,7 +246,11 @@ RSpec.describe "Native libvips image processing" do
 
   it "rasterizes SVG natively and returns valid SVG when that is the requested format" do
     source = File.join(@directory, "source.svg")
-    File.write(source, '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="80"><rect width="160" height="80" fill="red"/></svg>')
+    File.write(source, <<~SVG)
+      <svg xmlns="http://www.w3.org/2000/svg" width="160" height="80">
+        <rect width="160" height="80" fill="red"/>
+      </svg>
+    SVG
     expect(Paperclip::Geometry.from_file(source).to_s).to eq("160x80")
     expect(dimensions(thumbnail(source, geometry: "40x40>", format: :png))).to eq([40, 20])
     svg = thumbnail(source, geometry: "40x40>")
