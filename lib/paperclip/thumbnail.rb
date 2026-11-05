@@ -1,131 +1,129 @@
 module Paperclip
-  # Handles thumbnailing images that are uploaded.
+  # Native libvips thumbnails retain Paperclip geometry and tempfile contracts.
+  # Style options are explicit: saver: { quality:, strip: }, flatten: [r, g, b],
+  # and grayscale: :rec709_luminance. CLI option strings are intentionally rejected.
   class Thumbnail < Processor
-    attr_accessor :current_geometry, :target_geometry, :format, :whiny, :convert_options,
-                  :source_file_options, :animated, :auto_orient, :frame_index
+    attr_accessor :current_geometry, :target_geometry, :format, :whiny,
+                  :animated, :auto_orient, :frame_index
 
-    # List of formats that we need to preserve animation
-    ANIMATED_FORMATS = %w(gif).freeze
-    MULTI_FRAME_FORMATS = %w(.mkv .avi .mp4 .mov .mpg .mpeg .gif).freeze
-
-    # Creates a Thumbnail object set to work on the +file+ given. It
-    # will attempt to transform the image into one defined by +target_geometry+
-    # which is a "WxH"-style string. +format+ will be inferred from the +file+
-    # unless specified. Thumbnail creation will raise no errors unless
-    # +whiny+ is true (which it is, by default. If +convert_options+ is
-    # set, the options will be appended to the convert command upon image conversion
-    #
-    # Options include:
-    #
-    #   +geometry+ - the desired width and height of the thumbnail (required)
-    #   +file_geometry_parser+ - an object with a method named +from_file+ that takes an image file and produces its geometry and a +transformation_to+. Defaults to Paperclip::Geometry
-    #   +string_geometry_parser+ - an object with a method named +parse+ that takes a string and produces an object with +width+, +height+, and +to_s+ accessors. Defaults to Paperclip::Geometry
-    #   +source_file_options+ - flags passed to the +convert+ command that influence how the source file is read
-    #   +convert_options+ - flags passed to the +convert+ command that influence how the image is processed
-    #   +whiny+ - whether to raise an error when processing fails. Defaults to true
-    #   +format+ - the desired filename extension
-    #   +animated+ - whether to merge all the layers in the image. Defaults to true
-    #   +frame_index+ - the frame index of the source file to render as the thumbnail
     def initialize(file, options = {}, attachment = nil)
       super
-
-      geometry             = options[:geometry].to_s
-      @crop                = geometry[-1, 1] == "#"
-      @target_geometry     = options.fetch(:string_geometry_parser, Geometry).parse(geometry)
-      @current_geometry    = options.fetch(:file_geometry_parser, Geometry).from_file(@file)
-      @source_file_options = options[:source_file_options]
-      @convert_options     = options[:convert_options]
-      @whiny               = options.fetch(:whiny, true)
-      @format              = options[:format]
-      @animated            = options.fetch(:animated, true)
-      @auto_orient         = options.fetch(:auto_orient, true)
-      @current_geometry.auto_orient if @auto_orient && @current_geometry.respond_to?(:auto_orient)
-      @source_file_options = @source_file_options.split(/\s+/) if @source_file_options.respond_to?(:split)
-      @convert_options     = @convert_options.split(/\s+/)     if @convert_options.respond_to?(:split)
-
-      @current_format      = File.extname(@file.path)
-      @basename            = File.basename(@file.path, @current_format)
-      @frame_index         = multi_frame_format? ? options.fetch(:frame_index, 0) : 0
+      @target_geometry = options.fetch(:string_geometry_parser, Geometry).parse(options[:geometry].to_s)
+      @current_geometry = options.fetch(:file_geometry_parser, Geometry).from_file(file)
+      @format = options[:format]
+      @whiny = options.fetch(:whiny, true)
+      @animated = options.fetch(:animated, true)
+      @auto_orient = options.fetch(:auto_orient, true)
+      @frame_index = options.fetch(:frame_index, 0)
+      @current_geometry.auto_orient if auto_orient
     end
 
-    # Returns true if the +target_geometry+ is meant to crop.
-    def crop?
-      @crop
-    end
-
-    # Returns true if the image is meant to make use of additional convert options.
-    def convert_options?
-      !@convert_options.nil? && !@convert_options.empty?
-    end
-
-    # Performs the conversion of the +file+ into a thumbnail. Returns the Tempfile
-    # that contains the new image.
     def make
-      src = @file
-      filename = [@basename, @format ? ".#{@format}" : ""].join
-      dst = TempfileFactory.new.generate(filename)
+      raise Error, "Use style saver/flatten/grayscale options instead of convert_options" if options[:convert_options].present?
+      raise Error, "Use native loader options instead of source_file_options" if options[:source_file_options].present?
 
-      begin
-        parameters = []
-        parameters << source_file_options
-        parameters << ":source"
-        parameters << transformation_command
-        parameters << convert_options
-        parameters << ":dest"
+      source = ::Vips::Image.new_from_file(file.path, access: :sequential)
+      source_format = source.get("vips-loader").sub(/load.*/, "")
+      extension = File.extname(file.path).delete_prefix(".").downcase
+      output_format = format.to_s.presence || (extension == "svg" || native_saver?(extension) ? extension : source_format)
+      preserve_animation = animated && source_format == "gif" && output_format == "gif" && source.get("n-pages") > 1
+      loader = options.fetch(:loader, {}).merge(autorot: auto_orient)
+      loader.merge!(n: preserve_animation ? -1 : 1, page: preserve_animation ? 0 : frame_index) if source.get_typeof("n-pages") != 0
 
-        parameters = parameters.flatten.compact.join(" ").strip.squeeze(" ")
-
-        frame = animated? ? "" : "[#{@frame_index}]"
-        convert(
-          parameters,
-          source: "#{File.expand_path(src.path)}#{frame}",
-          dest: File.expand_path(dst.path)
-        )
-      rescue Terrapin::ExitStatusError => e
-        if @whiny
-          message = "There was an error processing the thumbnail for #{@basename}:\n" + e.message
-          raise Paperclip::Error, message
-        end
-      rescue Terrapin::CommandNotFoundError => e
-        raise Paperclip::Errors::CommandNotFoundError.new("Could not run the `convert` command. Please install ImageMagick.")
+      pipeline = if preserve_animation
+                   ImageProcessing::Vips.source(resize_animation).loader(autorot: false)
+                 else
+                   resize_image(ImageProcessing::Vips.source(file).loader(**loader))
+                 end
+      pipeline = pipeline.flatten(background: options[:flatten]) if options[:flatten]
+      pipeline = grayscale_image(pipeline) if options[:grayscale]
+      pipeline = pipeline.saver(**options.fetch(:saver, {}))
+      destination = TempfileFactory.new.generate("thumbnail.#{output_format}")
+      if output_format == "svg"
+        write_svg(pipeline, destination)
+      else
+        pipeline.call(destination: destination.path)
       end
+      destination.rewind
+      destination
+    rescue ::Vips::Error, ImageProcessing::Error, Paperclip::Error => error
+      destination.close! if destination
+      raise Paperclip::Error, "Error processing #{File.basename(file.path)} with libvips: #{error.message}" if whiny
 
-      dst
+      file.rewind
+      file
     end
 
-    # Returns the command ImageMagick's +convert+ needs to transform the image
-    # into the thumbnail.
-    def transformation_command
-      scale, crop = @current_geometry.transformation_to(@target_geometry, crop?)
-      trans = []
-      trans << "-coalesce" if animated?
-      trans << "-auto-orient" if auto_orient
-      trans << "-resize" << %["#{scale}"] unless scale.nil? || scale.empty?
-      trans << "-crop" << %["#{crop}"] << "+repage" if crop
-      trans << '-layers "optimize"' if animated?
-      trans
+    def crop?
+      target_geometry && target_geometry.modifier == "#"
     end
 
-    protected
+    private
 
-    def multi_frame_format?
-      MULTI_FRAME_FORMATS.include? @current_format
+    def native_saver?(extension)
+      saver = ::Vips.vips_foreign_find_save("thumbnail.#{extension}") if extension.present?
+      saver && !saver.include?("Magick")
     end
 
-    def animated?
-      @animated && (ANIMATED_FORMATS.include?(@format.to_s) || @format.blank?) && identified_as_animated?
-    end
+    def resize_image(pipeline)
+      return pipeline unless target_geometry
 
-    # Return true if ImageMagick's +identify+ returns an animated format
-    def identified_as_animated?
-      if @identified_as_animated.nil?
-        @identified_as_animated = ANIMATED_FORMATS.include? identify("-format %m :file", file: "#{@file.path}[0]").to_s.downcase.strip
+      width = target_geometry.width.positive? ? target_geometry.width.to_i : nil
+      height = target_geometry.height.positive? ? target_geometry.height.to_i : nil
+      case target_geometry.modifier
+      when "#"
+        pipeline.resize_to_fill(width, height)
+      when ">"
+        pipeline.resize_to_limit(width, height)
+      when "<"
+        pipeline.resize_to_fit(width, height, size: :up)
+      when "!"
+        pipeline.resize_to_fit(width, height, size: width && height ? :force : :both)
+      when "^"
+        pipeline.resize_to_cover(width, height)
+      when "%"
+        pipeline.resize_to_fit((current_geometry.width * width / 100.0).round,
+                               (current_geometry.height * (height || width) / 100.0).round, size: :force)
+      when "@", "@>", ">@"
+        scale = Math.sqrt(width / (current_geometry.width * current_geometry.height))
+        scale = [scale, 1].min if target_geometry.modifier.include?(">")
+        pipeline.resize_to_fit((current_geometry.width * scale).round, (current_geometry.height * scale).round)
+      else
+        pipeline.resize_to_fit(width, height)
       end
-      @identified_as_animated
-    rescue Terrapin::ExitStatusError => e
-      raise Paperclip::Error, "There was an error running `identify` for #{@basename}" if @whiny
-    rescue Terrapin::CommandNotFoundError => e
-      raise Paperclip::Errors::CommandNotFoundError.new("Could not run the `identify` command. Please install ImageMagick.")
+    end
+
+    def resize_animation
+      # Coalesce in memory so a crop never crosses GIF frame boundaries. If
+      # oversized animations become common, process and encode frames in a stream.
+      source = ::Vips::Image.new_from_file(file.path, n: -1, access: :sequential).copy_memory
+      page_height = source.get("page-height")
+      frames = (source.height / page_height).times.map do |index|
+        frame = source.crop(0, index * page_height, source.width, page_height)
+        resize_image(ImageProcessing::Vips.source(frame).loader(autorot: auto_orient)).call(save: false)
+      end
+      image = ::Vips::Image.arrayjoin(frames, across: 1)
+      image.set_type(GObject::GINT_TYPE, "page-height", frames.first.height)
+      image
+    end
+
+    def grayscale_image(pipeline)
+      raise Error, "Unsupported grayscale conversion: #{options[:grayscale]}" unless options[:grayscale] == :rec709_luminance
+
+      # Rec709Luminance operates in linear light. B_W alone applies gamma and
+      # makes existing grayscale badges visibly lighter than their stored values.
+      pipeline.colourspace(:scrgb).recomb([[0.212656, 0.715158, 0.072186]])
+        .linear(255, 0).rint.cast(:uchar).copy(interpretation: :b_w)
+    end
+
+    def write_svg(pipeline, destination)
+      # libvips has a native SVG reader, but no SVG writer. Keep the requested
+      # MIME/extension using a valid SVG containing the transformed PNG pixels.
+      image = pipeline.call(save: false)
+      png = image.pngsave_buffer(**options.fetch(:saver, {}).except(:quality))
+      encoded = Base64.strict_encode64(png)
+      destination.write(%(<svg xmlns="http://www.w3.org/2000/svg" width="#{image.width}" height="#{image.height}" viewBox="0 0 #{image.width} #{image.height}"><image width="#{image.width}" height="#{image.height}" href="data:image/png;base64,#{encoded}"/></svg>))
+      destination.flush
     end
   end
 end

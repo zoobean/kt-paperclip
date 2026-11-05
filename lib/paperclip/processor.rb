@@ -33,24 +33,5 @@ module Paperclip
       new(file, options, attachment).make
     end
 
-    # The convert method runs the convert binary with the provided arguments.
-    # See Paperclip.run for the available options.
-    def convert(arguments = "", local_options = {})
-      Paperclip.run(
-        Paperclip.options[:is_windows] ? "magick convert" : "convert",
-        arguments,
-        local_options
-      )
-    end
-
-    # The identify method runs the identify binary with the provided arguments.
-    # See Paperclip.run for the available options.
-    def identify(arguments = "", local_options = {})
-      Paperclip.run(
-        Paperclip.options[:is_windows] ? "magick identify" : "identify",
-        arguments,
-        local_options
-      )
-    end
   end
 end

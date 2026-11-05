@@ -1,5 +1,5 @@
 # Paperclip allows file attachments that are stored in the filesystem. All graphical
-# transformations are done using the Graphics/ImageMagick command line utilities and
+# transformations are done using libvips and
 # are stored in Tempfiles until the record is saved. Paperclip does not require a
 # separate model for storing the attachment's information, instead adding a few simple
 # columns to your table.
@@ -28,6 +28,15 @@
 require "erb"
 require "digest"
 require "tempfile"
+require "image_processing/vips"
+require "base64"
+
+# Preserve native SVG uploads without permitting libvips to fall back to ImageMagick.
+::Vips.block("VipsForeignLoadSvg", false)
+%w[VipsForeignLoadMagick VipsForeignLoadMagick7 VipsForeignSaveMagick VipsForeignSaveMagick7].each do |operation|
+  ::Vips.block(operation, true)
+end
+
 require "paperclip/version"
 require "paperclip/geometry_parser_factory"
 require "paperclip/geometry_detector_factory"
