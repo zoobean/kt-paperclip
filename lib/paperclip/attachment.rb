@@ -527,15 +527,18 @@ module Paperclip
                                 inject(original) do |file, processor|
         file = Paperclip.processor(processor).make(file, style.processor_options, self)
         intermediate_files << file unless file == @queued_for_write[:original]
-        # if we're processing the original, close + unlink the source tempfile
-        @queued_for_write[:original].close(true) if name == :original
         file
       end
 
       unadapted_file = @queued_for_write[name]
+      # A processor may return its input when an external optimizer fails. Keep
+      # that original alive until every processor has consumed it.
+      original.close(true) if name == :original && !unadapted_file.equal?(original)
       @queued_for_write[name] = Paperclip.io_adapters.
                                 for(@queued_for_write[name], @options[:adapter_options])
-      unadapted_file.close if unadapted_file.respond_to?(:close)
+      if unadapted_file.respond_to?(:close) && !unadapted_file.equal?(@queued_for_write[name])
+        unadapted_file.close
+      end
       @queued_for_write[name]
     rescue Paperclip::Errors::NotIdentifiedByImageMagickError => e
       log("An error was received while processing: #{e.inspect}")

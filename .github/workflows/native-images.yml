@@ -1,0 +1,31 @@
+name: Native images
+
+on:
+  push:
+    branches: [codex/libvips-only]
+  pull_request:
+    branches: [7-3-stable]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      BUNDLE_GEMFILE: Gemfile.native
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the Heroku 24 native image packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libvips42t64 libvips-tools
+          vips --version
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
+        with:
+          ruby-version: "4.0.9"
+          bundler-cache: true
+      - name: Check native image processing
+        run: bundle exec ruby -Ilib spec/paperclip/thumbnail_spec.rb --options /dev/null

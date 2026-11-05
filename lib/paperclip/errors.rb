@@ -22,8 +22,9 @@ module Paperclip
     # metadata, usually this would mean the file is not an image. If you are
     # consistently receiving this error on PDFs make sure that you have
     # installed Ghostscript.
-    class NotIdentifiedByImageMagickError < Paperclip::Error
+    class NotIdentifiedByVipsError < Paperclip::Error
     end
+    NotIdentifiedByImageMagickError = NotIdentifiedByVipsError
 
     # Will be thrown if the interpolation is creating an infinite loop. If you
     # are creating an interpolator which might cause an infinite loop, you

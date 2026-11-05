@@ -1,6 +1,59 @@
 Paperclip
 =========
 
+## Zoobean libvips fork
+
+This branch keeps the `kt-paperclip` 7.3 attachment and storage API while replacing
+all built-in image commands with libvips. Install libvips 8.13 or newer with native
+JPEG, PNG, GIF, WebP, and SVG codecs. `image_processing` 2.x and `ruby-vips` are the
+only image gems required; MiniMagick is not installed. The original documentation
+below describes the upstream ImageMagick implementation and its legacy CLI
+options, which this branch deliberately does not support.
+
+Keep the existing style geometry and format. Replace image `convert_options` with
+explicit style options:
+
+```ruby
+has_attached_file :image, styles: {
+  thumb: {
+    geometry: "325x325#",
+    format: :png,
+    flatten: [255, 255, 255],
+    grayscale: :rec709_luminance,
+    saver: { quality: 85, strip: true },
+  },
+}
+```
+
+The saver hash uses `ImageProcessing::Vips` encoding options. Native `loader`
+options are also accepted. Thumbnail CLI strings raise an error instead of
+silently omitting transformations; custom FFmpeg processors retain their own
+`convert_options` contracts. ImageMagick load/save classes are blocked, including
+their ImageMagick 7 variants, even when the host libvips build includes them.
+Native SVG loading is explicitly enabled after `image_processing` sets its loader
+defaults. SVG output is a valid SVG containing the resized PNG because libvips
+does not have an SVG encoder. Stock 7.3 GIF animation, frame selection, EXIF
+orientation, and original-only attachment behavior are preserved. GIF frames are
+coalesced in memory for frame-safe cropping.
+
+`Paperclip::Errors::NotIdentifiedByVipsError` aliases the historical geometry error
+name for compatibility. Successful thumbnails are readable, rewound Tempfiles.
+With `whiny: false`, processing errors return the original, rewound file rather
+than an empty output. Processor `convert` and `identify` command helpers were
+removed; custom image processors must use native operations.
+
+Run the focused image checks without the historical database test harness:
+
+```sh
+BUNDLE_GEMFILE=Gemfile.native bundle install
+BUNDLE_GEMFILE=Gemfile.native bundle exec ruby -Ilib spec/paperclip/thumbnail_spec.rb --options /dev/null
+```
+
+The checks generate their inputs with libvips and forbid image command execution.
+The native image workflow runs these checks on Ubuntu 24.04 with its libvips
+packages, matching the Heroku 24 runtime family, Ruby 4.0.9, ruby-vips 2.2.3, and
+image_processing 2.2.0. It does not run the historical database/CLI test harness.
+
 We plan to support and maintain paperclip, as well as clean it up.
 
 Please feel free to contribute Issues and pull requests.

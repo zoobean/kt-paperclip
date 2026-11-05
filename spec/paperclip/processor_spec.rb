@@ -8,19 +8,9 @@ describe Paperclip::Processor do
     Paperclip::Processor.make(:one, :two, :three)
   end
 
-  context "Calling #convert" do
-    it "runs the convert command with Terrapin" do
-      Paperclip.options[:log_command] = false
-      expect(Terrapin::CommandLine).to receive(:new).with("convert", "stuff", {}).and_return(double(run: nil))
-      Paperclip::Processor.new("filename").convert("stuff")
-    end
-  end
-
-  context "Calling #identify" do
-    it "runs the identify command with Terrapin" do
-      Paperclip.options[:log_command] = false
-      expect(Terrapin::CommandLine).to receive(:new).with("identify", "stuff", {}).and_return(double(run: nil))
-      Paperclip::Processor.new("filename").identify("stuff")
-    end
+  it "does not expose ImageMagick command helpers" do
+    processor = Paperclip::Processor.new("filename")
+    expect(processor).not_to respond_to(:convert)
+    expect(processor).not_to respond_to(:identify)
   end
 end

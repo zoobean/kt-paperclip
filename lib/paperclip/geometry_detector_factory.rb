@@ -7,25 +7,21 @@ module Paperclip
 
     def make
       geometry = GeometryParser.new(geometry_string.strip).make
-      geometry || raise(Errors::NotIdentifiedByImageMagickError.new("Could not identify image size"))
+      geometry || raise(Errors::NotIdentifiedByVipsError.new("Could not identify image size"))
     end
 
     private
 
     def geometry_string
-      orientation = Paperclip.options[:use_exif_orientation] ?
-        "%[exif:orientation]" : "1"
-      Paperclip.run(
-        Paperclip.options[:is_windows] ? "magick identify" : "identify",
-        "-format '%wx%h,#{orientation}' :file", {
-          file: "#{path}[0]"
-        },
-        swallow_stderr: true
-      )
-    rescue Terrapin::ExitStatusError
+      image = ::Vips::Image.new_from_file(path, access: :sequential)
+      orientation = if Paperclip.options[:use_exif_orientation] && image.get_typeof("orientation") != 0
+                      image.get("orientation")
+                    else
+                      1
+                    end
+      "#{image.width}x#{image.height},#{orientation}"
+    rescue ::Vips::Error
       ""
-    rescue Terrapin::CommandNotFoundError => e
-      raise_because_imagemagick_missing
     end
 
     def path
@@ -34,12 +30,8 @@ module Paperclip
 
     def raise_if_blank_file
       if path.blank?
-        raise Errors::NotIdentifiedByImageMagickError.new("Cannot find the geometry of a file with a blank name")
+        raise Errors::NotIdentifiedByVipsError, "Cannot find the geometry of a file with a blank name"
       end
-    end
-
-    def raise_because_imagemagick_missing
-      raise Errors::CommandNotFoundError.new("Could not run the `identify` command. Please install ImageMagick.")
     end
   end
 end
